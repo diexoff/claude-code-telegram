@@ -18,6 +18,61 @@ def escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _convert_markdown_tables(text: str) -> str:
+    """Convert markdown pipe-tables to <pre>-wrapped monospace tables."""
+    lines = text.split("\n")
+    result = []
+    i = 0
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2:
+            table_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i])
+                i += 1
+
+            # Filter separator rows like |---|---|
+            data_rows = [
+                l for l in table_lines
+                if not re.match(r"^\s*\|[\s\-:|]+\|\s*$", l)
+            ]
+
+            if data_rows:
+                rows = []
+                for row in data_rows:
+                    cells = [
+                        escape_html(re.sub(r"<[^>]+>", "", c).strip())
+                        for c in row.strip().strip("|").split("|")
+                    ]
+                    rows.append(cells)
+
+                col_count = max(len(r) for r in rows)
+                col_widths = [0] * col_count
+                for row in rows:
+                    for j, cell in enumerate(row):
+                        if j < col_count:
+                            col_widths[j] = max(col_widths[j], len(cell))
+
+                formatted = []
+                for idx, row in enumerate(rows):
+                    padded = [
+                        (row[j] if j < len(row) else "").ljust(col_widths[j])
+                        for j in range(col_count)
+                    ]
+                    formatted.append("  ".join(padded).rstrip())
+                    if idx == 0:
+                        formatted.append("  ".join("─" * w for w in col_widths))
+
+                result.append("<pre>" + "\n".join(formatted) + "</pre>")
+            continue
+
+        result.append(lines[i])
+        i += 1
+
+    return "\n".join(result)
+
+
 def markdown_to_telegram_html(text: str) -> str:
     """Convert Claude's markdown output to Telegram-compatible HTML.
 
@@ -26,6 +81,9 @@ def markdown_to_telegram_html(text: str) -> str:
     to that subset while preserving code blocks verbatim.
 
     Order of operations:
+    0. Convert markdown tables to <pre> blocks
+    0b. Convert horizontal rules (---) to a separator line
+    0c. Extract existing Telegram HTML tags -> placeholders
     1. Extract fenced code blocks -> placeholders
     2. Extract inline code -> placeholders
     3. HTML-escape remaining text
@@ -45,6 +103,26 @@ def markdown_to_telegram_html(text: str) -> str:
         placeholder_counter += 1
         placeholders.append((key, html_content))
         return key
+
+    # --- 0. Convert markdown tables to <pre> blocks ---
+    text = _convert_markdown_tables(text)
+
+    # --- 0b. Convert horizontal rules (--- on its own line) ---
+    text = re.sub(r"^\s*-{3,}\s*$", "─" * 20, text, flags=re.MULTILINE)
+
+    # --- 0c. Extract existing Telegram-compatible HTML tags as placeholders ---
+    # Handles Claude output that already contains HTML markup so escape_html
+    # in step 3 doesn't destroy the tags.
+    def _extract_html(m: re.Match) -> str:  # type: ignore[type-arg]
+        return _make_placeholder(m.group(0))
+
+    # Multi-line <pre> blocks first (greedy content, so longest match wins)
+    text = re.sub(r"<pre(?:[^>]*)>.*?</pre>", _extract_html, text, flags=re.DOTALL)
+    # Inline formatted tags
+    for tag in ("b", "strong", "i", "em", "u", "s", "strike", "del", "code"):
+        text = re.sub(rf"<{tag}>.*?</{tag}>", _extract_html, text, flags=re.DOTALL)
+    # Anchor tags
+    text = re.sub(r'<a\s+href="[^"]*">.*?</a>', _extract_html, text, flags=re.DOTALL)
 
     # --- 1. Extract fenced code blocks ---
     def _replace_fenced(m: re.Match) -> str:  # type: ignore[type-arg]
