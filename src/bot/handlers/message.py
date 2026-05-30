@@ -938,6 +938,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             session_id = context.user_data.get("claude_session_id")
 
+            # Build image payload for Claude's multimodal API
+            fmt = (
+                processed_image.metadata.get("format", "jpeg")
+                if processed_image.metadata
+                else "jpeg"
+            )
+            media_type_map = {
+                "png": "image/png",
+                "gif": "image/gif",
+                "webp": "image/webp",
+            }
+            media_type = media_type_map.get(fmt, "image/jpeg")
+            image_payload = [
+                {"data": processed_image.base64_data, "media_type": media_type}
+            ]
+
             # Process with Claude
             try:
                 claude_response = await claude_integration.run_command(
@@ -945,6 +961,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     working_directory=current_dir,
                     user_id=user_id,
                     session_id=session_id,
+                    images=image_payload,
                 )
 
                 # Update session ID
