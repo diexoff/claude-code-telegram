@@ -45,6 +45,23 @@ logger = structlog.get_logger()
 # Fallback message when Claude produces no text but did use tools.
 TASK_COMPLETED_MSG = "✅ Task completed. Tools used: {tools_summary}"
 
+# Human-readable notes for ResultMessage.subtype values that mean the run was cut
+# short rather than finishing normally. Appended to the answer so the user can
+# tell a truncated reply from a complete one.
+STOP_REASON_NOTES = {
+    "error_max_budget_usd": (
+        "⚠️ Прогон остановлен: исчерпан бюджет стоимости запроса "
+        "(CLAUDE_MAX_COST_PER_REQUEST). Ответ может быть неполным."
+    ),
+    "error_max_turns": (
+        "⚠️ Прогон остановлен: достигнут лимит ходов (CLAUDE_MAX_TURNS). "
+        "Ответ может быть неполным."
+    ),
+    "error_during_execution": (
+        "⚠️ Прогон прерван ошибкой во время выполнения. Ответ может быть неполным."
+    ),
+}
+
 
 @dataclass
 class ClaudeResponse:
@@ -516,11 +533,13 @@ class ClaudeSDKManager:
             tools_used: List[Dict[str, Any]] = []
             claude_session_id = None
             result_content = None
+            result_subtype = None
             for message in messages:
                 if isinstance(message, ResultMessage):
                     cost = getattr(message, "total_cost_usd", 0.0) or 0.0
                     claude_session_id = getattr(message, "session_id", None)
                     result_content = getattr(message, "result", None)
+                    result_subtype = getattr(message, "subtype", None)
                     current_time = asyncio.get_event_loop().time()
                     for msg in messages:
                         if isinstance(msg, AssistantMessage):
@@ -565,18 +584,27 @@ class ClaudeSDKManager:
                     previous_session_id=session_id,
                 )
 
-            # Use ResultMessage.result if available, fall back to message extraction
-            if result_content is not None:
-                content = str(result_content).strip()
-            else:
+            # Use ResultMessage.result if it actually contains text; otherwise
+            # rebuild the answer from the assistant messages.
+            #
+            # NOTE: ResultMessage.result can be an *empty string* (not just None)
+            # when a turn ends without a closing summary — e.g. the model wrote
+            # some text, called a tool, then the run stopped (max turns / interrupt)
+            # before emitting a final message. The previous `is not None` check
+            # treated "" as a valid result and discarded the real assistant text,
+            # replacing it with the "Task completed" placeholder.
+            content = str(result_content).strip() if result_content is not None else ""
+
+            if not content:
                 content_parts = []
                 for msg in messages:
                     if isinstance(msg, AssistantMessage):
                         msg_content = getattr(msg, "content", [])
                         if msg_content and isinstance(msg_content, list):
                             for block in msg_content:
-                                if hasattr(block, "text"):
-                                    content_parts.append(block.text)
+                                text = getattr(block, "text", None)
+                                if text and text.strip():
+                                    content_parts.append(text)
                         elif msg_content:
                             content_parts.append(str(msg_content))
                 content = "\n".join(content_parts).strip()
@@ -590,6 +618,17 @@ class ClaudeSDKManager:
                 unique_tool_names = list(dict.fromkeys(tool_names))
                 tools_summary = ", ".join(unique_tool_names) or "unknown"
                 content = TASK_COMPLETED_MSG.format(tools_summary=tools_summary)
+
+            # If the run was cut short (budget / turns / execution error), tell the
+            # user so a partial answer isn't mistaken for a finished one.
+            stop_note = STOP_REASON_NOTES.get(result_subtype or "")
+            if stop_note:
+                logger.warning(
+                    "Claude run ended with non-success subtype",
+                    subtype=result_subtype,
+                    cost=cost,
+                )
+                content = f"{content}\n\n{stop_note}" if content else stop_note
 
             return ClaudeResponse(
                 content=content,
