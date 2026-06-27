@@ -342,9 +342,14 @@ class ClaudeSDKManager:
             _budget = self.config.claude_max_cost_per_request
             sdk_max_budget = _budget if _budget and _budget > 0 else None
 
+            # A non-positive max_turns means "no limit" — the SDK runs without a
+            # turn cap when max_turns is None. The timeout still guards runaways.
+            _turns = self.config.claude_max_turns
+            sdk_max_turns = _turns if _turns and _turns > 0 else None
+
             # Build Claude Agent options
             options = ClaudeAgentOptions(
-                max_turns=self.config.claude_max_turns,
+                max_turns=sdk_max_turns,
                 model=self.config.claude_model or None,
                 max_budget_usd=sdk_max_budget,
                 cwd=str(working_directory),
