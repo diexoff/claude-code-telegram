@@ -335,11 +335,18 @@ class ClaudeSDKManager:
                 sdk_allowed_tools = self.config.claude_allowed_tools
                 sdk_disallowed_tools = self.config.claude_disallowed_tools
 
+            # On a Claude subscription the per-request "cost" (total_cost_usd) is
+            # only a notional token-price estimate, not real billing. Treat a
+            # non-positive budget as "disabled" so it never cuts a run short — the
+            # SDK applies no cap when max_budget_usd is None.
+            _budget = self.config.claude_max_cost_per_request
+            sdk_max_budget = _budget if _budget and _budget > 0 else None
+
             # Build Claude Agent options
             options = ClaudeAgentOptions(
                 max_turns=self.config.claude_max_turns,
                 model=self.config.claude_model or None,
-                max_budget_usd=self.config.claude_max_cost_per_request,
+                max_budget_usd=sdk_max_budget,
                 cwd=str(working_directory),
                 allowed_tools=sdk_allowed_tools,
                 disallowed_tools=sdk_disallowed_tools,
