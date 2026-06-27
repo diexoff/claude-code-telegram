@@ -157,8 +157,11 @@ def _validate_config(settings: Settings) -> None:
     if settings.claude_max_cost_per_user <= 0:
         raise InvalidConfigError("claude_max_cost_per_user must be positive")
 
-    if settings.claude_max_cost_per_request <= 0:
-        raise InvalidConfigError("claude_max_cost_per_request must be positive")
+    # 0 disables the per-request budget cap (max_budget_usd=None); negative is invalid.
+    if settings.claude_max_cost_per_request < 0:
+        raise InvalidConfigError(
+            "claude_max_cost_per_request must be >= 0 (0 disables the budget)"
+        )
 
 
 def _get_enabled_features_summary(settings: Settings) -> list[str]:
