@@ -9,6 +9,19 @@ import re
 from typing import List, Tuple
 
 
+def _strip_inline_markdown(text: str) -> str:
+    """Remove inline markdown markers from text destined for a <pre> block.
+
+    Telegram renders nothing but monospace inside <pre>, so leftover
+    backticks/asterisks/underscores would show up literally. Since the block
+    is already monospace, we just drop the markers and keep the content.
+    """
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # bold
+    text = re.sub(r"`([^`]+)`", r"\1", text)  # inline code
+    text = re.sub(r"~~(.+?)~~", r"\1", text)  # strikethrough
+    return text
+
+
 def escape_html(text: str) -> str:
     """Escape the 3 HTML-special characters for Telegram.
 
@@ -42,7 +55,9 @@ def _convert_markdown_tables(text: str) -> str:
                 rows = []
                 for row in data_rows:
                     cells = [
-                        escape_html(re.sub(r"<[^>]+>", "", c).strip())
+                        escape_html(
+                            _strip_inline_markdown(re.sub(r"<[^>]+>", "", c).strip())
+                        )
                         for c in row.strip().strip("|").split("|")
                     ]
                     rows.append(cells)

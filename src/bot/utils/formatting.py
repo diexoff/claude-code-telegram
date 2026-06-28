@@ -483,18 +483,30 @@ class ResponseFormatter:
         messages = []
         current_lines: List[str] = []
         current_length = 0
-        in_code_block = False
+        # Opening tag of the <pre> block we're currently inside, or None.
+        # Tables emit "<pre>" (no <code>); fenced code emits "<pre><code...>".
+        # Closing/reopening with the wrong tag yields unbalanced HTML that
+        # Telegram rejects, so we mirror whichever tag actually opened.
+        open_pre: Optional[str] = None
+
+        def _closer() -> str:
+            return "</code></pre>" if open_pre and "<code" in open_pre else "</pre>"
+
+        def _update_pre_state(line: str) -> None:
+            nonlocal open_pre
+            # A line may open and/or close a block. Closing wins for the net
+            # state after the line, so single-line blocks end up closed.
+            if "<pre><code" in line:
+                open_pre = "<pre><code>"
+            elif "<pre>" in line:
+                open_pre = "<pre>"
+            if "</pre>" in line:
+                open_pre = None
 
         lines = text.split("\n")
 
         for line in lines:
             line_length = len(line) + 1  # +1 for newline
-
-            # Track HTML <pre> code block state
-            if "<pre>" in line or "<pre><code" in line:
-                in_code_block = True
-            if "</pre>" in line:
-                in_code_block = False
 
             # If this is a very long line that exceeds limit by itself, split it
             if line_length > self.max_message_length:
@@ -509,36 +521,38 @@ class ResponseFormatter:
                         current_length + chunk_length > self.max_message_length
                         and current_lines
                     ):
-                        if in_code_block:
-                            current_lines.append("</code></pre>")
+                        if open_pre:
+                            current_lines.append(_closer())
                         messages.append(FormattedMessage("\n".join(current_lines)))
 
                         current_lines = []
                         current_length = 0
-                        if in_code_block:
-                            current_lines.append("<pre><code>")
-                            current_length = 12
+                        if open_pre:
+                            current_lines.append(open_pre)
+                            current_length = len(open_pre) + 1
 
                     current_lines.append(chunk)
                     current_length += chunk_length
+                _update_pre_state(line)
                 continue
 
             # Check if adding this line would exceed the limit
             if current_length + line_length > self.max_message_length and current_lines:
-                if in_code_block:
-                    current_lines.append("</code></pre>")
+                if open_pre:
+                    current_lines.append(_closer())
 
                 messages.append(FormattedMessage("\n".join(current_lines)))
 
                 current_lines = []
                 current_length = 0
 
-                if in_code_block:
-                    current_lines.append("<pre><code>")
-                    current_length = 12
+                if open_pre:
+                    current_lines.append(open_pre)
+                    current_length = len(open_pre) + 1
 
             current_lines.append(line)
             current_length += line_length
+            _update_pre_state(line)
 
         # Add remaining content
         if current_lines:
